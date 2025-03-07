@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Choropleth & Normalized Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/@turf/turf"></script>
+    <style>
+        #map, #normalized-map {
+            height: 500px;
+            margin-bottom: 20px;
+        }
+        .info.legend i {
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            display: inline-block;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <h1> Lab 5, Henry Pitts</h1>
+    <h2>Choropleth Map of Airports Counts by Country</h2>
+    <div id="map"></div>
+
+    <h2>Normalized Map of Airports by Country Area</h2>
+    <h3> Scaled by a factor of 10^6 for visualization</h3>
+    <div id="normalized-map"></div>
+
+    <script>
+        // Initialize both maps
+        var map = L.map('map').setView([0, 0], 2);
+        var normalizedMap = L.map('normalized-map').setView([0, 0], 2);
+
+        // Add tile layers
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(normalizedMap);
+
+        // Add scale bars to both maps
+        L.control.scale().addTo(map);
+        L.control.scale().addTo(normalizedMap);
+
+        // Load GeoJSON data
+        let polygonsLayer, normalizedPolygonsLayer;
+
+        Promise.all([
+            fetch('points.geojson').then(res => res.json()),
+            fetch('polygons.geojson').then(res => res.json())
+        ]).then(([pointsData, polygonsData]) => {
+            polygonsLayer = L.geoJSON(polygonsData, {
+                style: feature => ({
+                    fillColor: 'white',
+                    weight: 2,
+                    opacity: 1,
+                    color: 'black',
+                    fillOpacity: 0.5
+                })
+            }).addTo(map);
+
+            processChoropleth(polygonsData, pointsData);
+            processNormalizedChoropleth(polygonsData);
+            addLegends();
+        });
+
+        function processChoropleth(polygonsData, pointsData) {
+            polygonsData.features.forEach(polygon => {
+                let count = 0;
+                pointsData.features.forEach(point => {
+                    if (turf.booleanPointInPolygon(point, polygon)) {
+                        count++;
+                    }
+                });
+                polygon.properties.pointCount = count;
+
+                // Calculate area in square kilometers using Turf.js
+                let areaSqKm = turf.area(polygon) / 1_000_000; // Convert from m² to km²
+                polygon.properties.area = areaSqKm;
+
+                // Debugging: Log values to check if they are correct
+                console.log(`Polygon ID: ${polygon.id || 'N/A'}, Area: ${areaSqKm}, Points: ${count}`);
+            });
+
+            // Set color based on raw point count
+            function getColor(d) {
+                return d > 10 ? '#800026' :
+                       d > 5  ? '#BD0026' :
+                       d > 2  ? '#E31A1C' :
+                       d > 0  ? '#FC4E2A' :
+                                '#FFEDA0';
+            }
+
+            polygonsLayer.eachLayer(layer => {
+                let count = layer.feature.properties.pointCount || 0;
+                let area = layer.feature.properties.area;
+                layer.setStyle({
+                    fillColor: getColor(count),
+                    fillOpacity: 0.7
+                });
+                layer.bindPopup(`Points: ${count} <br> Area: ${area} km²`);
+            });
+        }
+
+        function processNormalizedChoropleth(polygonsData) {
+            polygonsData.features.forEach(polygon => {
+                let area = polygon.properties.area; // Ensure area is correctly calculated
+                let count = polygon.properties.pointCount;
+
+                // Scale up the density by 10^6 (points per million km²)
+                let density = area > 0 ? (count / area) * 1_000_000 : 0; // Normalize and scale by 10^6
+
+                // Debugging: Log values to check if density is correct
+                console.log(`Polygon ID: ${polygon.id || 'N/A'}, Density: ${density}, Area: ${area}, Points: ${count}`);
+
+                polygon.properties.density = density;
+            });
+
+            // Apply color based on scaled density (points per million km²)
+            function getDensityColor(d) {
+                return d > 10 ? '#084594' :
+                       d > 5  ? '#2171B5' :
+                       d > 2  ? '#4292C6' :
+                       d > 1  ? '#6BAED6' :
+                                '#C6DBEF';
+            }
+
+            normalizedPolygonsLayer = L.geoJSON(polygonsData, {
+                style: feature => ({
+                    fillColor: getDensityColor(feature.properties.density),
+                    weight: 2,
+                    color: 'black',
+                    fillOpacity: 0.7
+                }),
+                onEachFeature: (feature, layer) => {
+                    let density = feature.properties.density.toFixed(4); // Show scaled density
+                    layer.bindPopup(`Density: ${density} points per million km²`);
+                }
+            }).addTo(normalizedMap);
+        }
+
+        // Add legends for both maps
+        function addLegends() {
+            // Legend for the Choropleth map (Raw Point Count)
+            var choroplethLegend = L.control({ position: 'bottomright' });
+            choroplethLegend.onAdd = function () {
+                var div = L.DomUtil.create('div', 'info legend');
+                var grades = [0, 2, 5, 10];
+                var labels = [];
+                var colors = ['#FFEDA0', '#FC4E2A', '#E31A1C', '#BD0026', '#800026'];
+
+                for (var i = 0; i < grades.length; i++) {
+                    labels.push(
+                        '<i style="background:' + colors[i] + '"></i> ' +
+                        grades[i] + (grades[i + 1] ? '&ndash;' + grades[i + 1] : '+')
+                    );
+                }
+
+                div.innerHTML = labels.join('<br>');
+                return div;
+            };
+            choroplethLegend.addTo(map);
+
+            // Legend for the Normalized map (Points per million km²)
+            var normalizedLegend = L.control({ position: 'bottomright' });
+            normalizedLegend.onAdd = function () {
+                var div = L.DomUtil.create('div', 'info legend');
+                var grades = [0, 1, 2, 5, 10];
+                var labels = [];
+                var colors = ['#C6DBEF', '#6BAED6', '#4292C6', '#2171B5', '#084594'];
+
+                for (var i = 0; i < grades.length; i++) {
+                    labels.push(
+                        '<i style="background:' + colors[i] + '"></i> ' +
+                        grades[i] + (grades[i + 1] ? '&ndash;' + grades[i + 1] : '+')
+                    );
+                }
+
+                div.innerHTML = labels.join('<br>');
+                return div;
+            };
+            normalizedLegend.addTo(normalizedMap);
+        }
+    </script>
+</body>
+</html>
